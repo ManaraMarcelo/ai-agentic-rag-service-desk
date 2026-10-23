@@ -1,0 +1,18 @@
+# Credenciais e Variáveis de Ambiente
+.env
+
+# Ambiente Virtual
+.venv/
+venv/
+ENV/
+
+# Arquivos de Sistema e Lixo do macOS
+.DS_Store
+._*
+**/._*
+
+# Python / Jupyter Cache
+__pycache__/
+*.py[cod]
+*$py.class
+.ipynb_checkpoints
