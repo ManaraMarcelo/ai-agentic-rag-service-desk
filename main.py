@@ -2,10 +2,16 @@ import os
 import re
 import time
 import pathlib
+import textwrap
+import warnings
 from pathlib import Path
 from typing import Literal, List, Dict, TypedDict, Optional
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
+
+# Oculta avisos internos de bibliotecas para manter o terminal limpo
+warnings.filterwarnings("ignore", category=DeprecationWarning)
+warnings.filterwarnings("ignore", category=UserWarning, module="langchain_google_genai")
 
 from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
 from langchain_core.messages import SystemMessage, HumanMessage
@@ -13,7 +19,6 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_community.document_loaders import PyMuPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
-from langchain.chains.combine_documents import create_stuff_documents_chain
 from langgraph.graph import StateGraph, START, END
 
 # --- 1. CONFIGURAÇÃO DE AMBIENTE E MODELO ---
@@ -25,7 +30,6 @@ if not GOOGLE_API_KEY:
 
 llm_triagem = ChatGoogleGenerativeAI(
     model="models/gemini-3.5-flash-lite", 
-    temperature=0.0, 
     api_key=GOOGLE_API_KEY
 )
 
@@ -98,8 +102,6 @@ prompt_rag = ChatPromptTemplate.from_messages([
     ("human", "Pergunta: {input}\n\nContexto:\n{context}")
 ])
 
-document_chain = create_stuff_documents_chain(llm_triagem, prompt_rag)
-
 # --- 4. FORMATADORES E CITAÇÕES ---
 def _clean_text(s: str) -> str:
     return re.sub(r"\s+", " ", s or "").strip()
@@ -132,8 +134,15 @@ def perguntar_politica_RAG(pergunta: str) -> Dict:
     if not docs_relacionados:
         return {"answer": "Não sei.", "citacoes": [], "contexto_encontrado": False}
 
-    answer = document_chain.invoke({"input": pergunta, "context": docs_relacionados})
-    txt = (answer or "").strip()
+    contexto_formatado = "\n\n".join([d.page_content for d in docs_relacionados])
+    chain_input = prompt_rag.format_messages(input=pergunta, context=contexto_formatado)
+    answer = llm_triagem.invoke(chain_input)
+
+    raw_content = answer.content
+    if isinstance(raw_content, list):
+        txt = "".join([str(item.get("text", "")) if isinstance(item, dict) else str(item) for item in raw_content]).strip()
+    else:
+        txt = (raw_content or "").strip()
 
     if txt.rstrip(".!?") == "Não sei":
         return {"answer": "Não sei.", "citacoes": [], "contexto_encontrado": False}
@@ -154,11 +163,11 @@ class AgentState(TypedDict, total=False):
     acao_final: str
 
 def node_triagem(state: AgentState) -> AgentState: 
-    print("-> Executando nó de triagem...")
+    print("  \033[2m↳ [Grafo] Executando triagem...\033[0m")
     return {"triagem": triagem(state["pergunta"])}
 
 def node_auto_resolver(state: AgentState) -> AgentState:
-    print("-> Executando nó de auto_resolver (RAG)...")
+    print("  \033[2m↳ [Grafo] Consultando base RAG (FAISS)...\033[0m")
     resposta_rag = perguntar_politica_RAG(state["pergunta"])
     update: AgentState = {
         "resposta": resposta_rag["answer"], 
@@ -170,7 +179,7 @@ def node_auto_resolver(state: AgentState) -> AgentState:
     return update
 
 def node_pedir_info(state: AgentState) -> AgentState:
-    print("-> Executando nó de pedir_info...")
+    print("  \033[2m↳ [Grafo] Acionando pedir_info...\033[0m")
     faltantes = state["triagem"].get("campos_faltantes", [])
     detalhe = ", ".join(faltantes) if faltantes else "Tema e contexto específico"
     return {
@@ -180,7 +189,7 @@ def node_pedir_info(state: AgentState) -> AgentState:
     }
 
 def node_abrir_chamado(state: AgentState) -> AgentState:
-    print("-> Executando nó de abrir_chamado...")
+    print("  \033[2m↳ [Grafo] Acionando abrir_chamado...\033[0m")
     triag = state["triagem"]
     return {
         "resposta": f"Abrindo chamado com urgência {triag['urgencia']}. Descrição: {state['pergunta'][:140]}", 
@@ -201,7 +210,9 @@ def decidir_pos_auto_resolver(state: AgentState) -> str:
         return "ok"
     state_da_pergunta = (state["pergunta"] or "").lower()
     if any(k in state_da_pergunta for k in KEYWORDS_ABRIR_TICKET):
+        print("  \033[33m↳ [Fallback] RAG sem base -> direcionando para abrir_chamado\033[0m")
         return "chamado"
+    print("  \033[33m↳ [Fallback] RAG sem base -> direcionando para pedir_info\033[0m")
     return "info" 
 
 workflow = StateGraph(AgentState)
@@ -227,7 +238,26 @@ workflow.add_edge("abrir_chamado", END)
 grafo = workflow.compile()
 
 # --- 6. BATERIA DE TESTES ---
+def _formatar_bloco(texto: str, largura: int = 76, indent: str = "    ") -> str:
+    paragrafos = [p.strip() for p in (texto or "").splitlines() if p.strip()]
+    linhas = [textwrap.fill(p, width=largura, initial_indent=indent, subsequent_indent=indent) for p in paragrafos]
+    return "\n".join(linhas) if linhas else f"{indent}(sem resposta)"
+
 if __name__ == "__main__":
+    BOLD = "\033[1m"
+    DIM = "\033[2m"
+    CYAN = "\033[96m"
+    GREEN = "\033[92m"
+    YELLOW = "\033[93m"
+    RED = "\033[91m"
+    RESET = "\033[0m"
+
+    COR_ACAO = {
+        "AUTO_RESOLVER": GREEN,
+        "PEDIR_INFO": YELLOW,
+        "ABRIR_CHAMADO": RED,
+    }
+
     testes = [
         "Posso reembolsar a internet?",
         "Quero mais 5 dias de trabalho remoto. Como faço?",
@@ -238,20 +268,63 @@ if __name__ == "__main__":
         "Quantas capivaras tem no Rio Pinheiros?"
     ]
 
-    print("\n================ INICIANDO SERVICE DESK IA ================\n")
-    for msg_test in testes:
-        resposta_final = grafo.invoke({"pergunta": msg_test})
-        triag = resposta_final.get("triagem", {})
-        
-        print(f"PERGUNTA: {msg_test}")
-        print(f"DECISÃO: {triag.get('decisao')} | URGÊNCIA: {triag.get('urgencia')} | AÇÃO FINAL: {resposta_final.get('acao_final')}")
-        print(f"RESPOSTA: {resposta_final.get('resposta')}")
-        
-        if resposta_final.get("citacoes"):
-            print("CITAÇÕES:")
-            for citacao in resposta_final.get("citacoes"):
-                print(f" - Documento: {citacao['documento']}, Página: {citacao['pagina']}")
-                print(f"   Trecho: {citacao['trecho']}")
+    print(f"\n{BOLD}{CYAN}════════════════════════════════════════════════════════════════════════════{RESET}")
+    print(f"{BOLD}{CYAN}               🤖 ASSISTENTE DE SERVICE DESK IA (AGENTIC RAG)               {RESET}")
+    print(f"{BOLD}{CYAN}════════════════════════════════════════════════════════════════════════════{RESET}\n")
 
-        print("-" * 60)
-        time.sleep(5)
+    def _exibir_resultado(pergunta: str) -> None:
+        resposta_final = grafo.invoke({"pergunta": pergunta})
+        triag = resposta_final.get("triagem", {})
+        decisao = triag.get("decisao", "-")
+        urgencia = triag.get("urgencia", "-")
+        acao = resposta_final.get("acao_final", "-")
+        cor = COR_ACAO.get(acao, RESET)
+
+        print(f"  {BOLD}Roteamento:{RESET} Triagem={decisao}  |  Urgência={urgencia}  |  Ação Final={cor}{BOLD}{acao}{RESET}")
+        print(f"  {BOLD}Resposta:{RESET}")
+        print(_formatar_bloco(resposta_final.get("resposta", "")))
+
+        if resposta_final.get("citacoes"):
+            print(f"  {BOLD}Fontes encontradas:{RESET}")
+            for citacao in resposta_final["citacoes"]:
+                print(f"    • {CYAN}{citacao['documento']}{RESET} {DIM}(Pág. {citacao['pagina']}){RESET}")
+                print(_formatar_bloco(f"\"{citacao['trecho']}...\"", largura=72, indent="      "))
+
+    total = len(testes)
+    for idx, msg_test in enumerate(testes, 1):
+        print(f"{BOLD}{CYAN}━━━ TESTE {idx}/{total} ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{RESET}")
+        print(f"  {BOLD}Pergunta:{RESET} {msg_test}")
+        _exibir_resultado(msg_test)
+        print()
+        if idx < total:
+            time.sleep(5)
+
+    # Modo interativo ao final da bateria de testes
+    while True:
+        try:
+            continuar = input(f"{BOLD}{CYAN}Deseja fazer uma pergunta personalizada? (y/n): {RESET}").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print("\nEncerrando.")
+            break
+
+        if continuar == "n":
+            print(f"{DIM}Execução encerrada.{RESET}\n")
+            break
+        if continuar != "y":
+            print(f"{YELLOW}Responda apenas 'y' para sim ou 'n' para não.{RESET}")
+            continue
+
+        try:
+            pergunta_usuario = input(f"\n{BOLD}Digite sua pergunta:{RESET} ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\nEncerrando.")
+            break
+
+        if not pergunta_usuario:
+            print(f"{YELLOW}Pergunta vazia. Tente novamente.{RESET}\n")
+            continue
+
+        print(f"{BOLD}{CYAN}━━━ PERGUNTA PERSONALIZADA ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{RESET}")
+        print(f"  {BOLD}Pergunta:{RESET} {pergunta_usuario}")
+        _exibir_resultado(pergunta_usuario)
+        print()

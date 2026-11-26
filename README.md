@@ -25,7 +25,7 @@ Setores de suporte interno lidam diariamente com um alto volume de dúvidas sobr
 
 ## 🛠️ Tecnologias Utilizadas
 * **Linguagem:** Python 3.10+
-* **LLM & Embeddings:** Google Gemini (`models/gemini-2.5-flash` e `models/gemini-embedding-001`) via `langchain-google-genai`
+* **LLM & Embeddings:** Google Gemini (`models/gemini-3.5-flash` e `models/gemini-embedding-001`) via `langchain-google-genai`
 * **Orquestração de Agentes:** `LangGraph` e `LangChain`
 * **Banco de Dados Vetorial:** `FAISS` (`faiss-cpu`)
 * **Processamento de Documentos:** `PyMuPDF` (`fitz`) e `RecursiveCharacterTextSplitter`
