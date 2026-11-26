@@ -24,8 +24,8 @@ if not GOOGLE_API_KEY:
     raise ValueError("Chave GOOGLE_API_KEY não encontrada no arquivo .env")
 
 llm_triagem = ChatGoogleGenerativeAI(
-    model="models/gemini-2.5-flash", 
-    temperature=1.0, 
+    model="models/gemini-3.5-flash-lite", 
+    temperature=0.0, 
     api_key=GOOGLE_API_KEY
 )
 
